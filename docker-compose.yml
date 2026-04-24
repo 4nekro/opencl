@@ -77,7 +77,7 @@ services:
   mem0:
     build:
       context: .
-      dockerfile: mem0/Dockerfile
+      dockerfile: Dockerfile
     image: ai-stack-mem0:latest
     container_name: mem0
     restart: unless-stopped
