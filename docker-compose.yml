@@ -1,0 +1,231 @@
+# ==============================================================
+# AI STACK - FREEZER (Portainer-ready)
+# ==============================================================
+# ANTES de importar no Portainer:
+#   1. Roda o setup.sh no freezer via SSH
+#   2. Cria Stack no Portainer → Add Stack → Repository
+#   3. Cola as variáveis do portainer-env.txt no campo "Environment variables"
+# ==============================================================
+
+services:
+
+  # ============================================================
+  # 1. CHROMADB - Vector Database
+  # ============================================================
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    restart: unless-stopped
+    ports:
+      - "8100:8000"
+    volumes:
+      - chromadb_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    networks:
+      - ai-stack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # 2. OLLAMA - Embeddings locais (nomic-embed-text)
+  # ============================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - ai-stack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # Baixa o modelo nomic-embed-text automaticamente no primeiro boot
+  # Usa a API REST do Ollama via curl — roda uma vez e para
+  ollama-pull:
+    image: curlimages/curl:latest
+    container_name: ollama-pull
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint:
+      - curl
+      - -sf
+      - -X
+      - POST
+      - http://ollama:11434/api/pull
+      - -d
+      - '{"model":"nomic-embed-text"}'
+    networks:
+      - ai-stack
+
+  # ============================================================
+  # 3. MEM0 - Camada de memória compartilhada
+  # Portainer faz o build a partir do repositório Git
+  # ============================================================
+  mem0:
+    build:
+      context: .
+      dockerfile: mem0/Dockerfile
+    image: ai-stack-mem0:latest
+    container_name: mem0
+    restart: unless-stopped
+    ports:
+      - "8888:8000"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - MEM0_LLM_MODEL=${MEM0_LLM_MODEL}
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+      - OLLAMA_URL=http://ollama:11434
+    depends_on:
+      chromadb:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - ai-stack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # 4. OPENCLAW - Gateway WhatsApp
+  # Dashboard: http://IP-DO-FREEZER:18789
+  # Onboarding pós-deploy: Portainer → openclaw-gateway → Console
+  #   → node dist/index.js onboard --mode local
+  # WhatsApp QR: node dist/index.js channels login
+  # ============================================================
+  openclaw-gateway:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw-gateway
+    restart: unless-stopped
+    ports:
+      - "18789:18789"
+    volumes:
+      - openclaw_config:/home/node/.openclaw
+      - openclaw_workspace:/home/node/.openclaw/workspace
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - MEM0_BASE_URL=http://mem0:8000
+    depends_on:
+      mem0:
+        condition: service_healthy
+    networks:
+      - ai-stack
+
+  # ============================================================
+  # 5. MONGODB - Banco de dados do LibreChat
+  # ============================================================
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - ai-stack
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # 6. MEILISEARCH - Busca de conversas no LibreChat
+  # ============================================================
+  meilisearch:
+    image: getmeili/meilisearch:v1.7.3
+    container_name: meilisearch
+    restart: unless-stopped
+    environment:
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY}
+      - MEILI_NO_ANALYTICS=true
+    volumes:
+      - meili_data:/meili_data
+    networks:
+      - ai-stack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # 7. LIBRECHAT - Interface web
+  # Acesso: http://IP-DO-FREEZER:3080
+  # O librechat.yaml é criado pelo setup.sh em /opt/ai-stack/
+  # ============================================================
+  librechat:
+    image: ghcr.io/danny-avila/librechat:latest
+    container_name: librechat
+    restart: unless-stopped
+    ports:
+      - "3080:3080"
+    volumes:
+      - /opt/ai-stack/librechat/librechat.yaml:/app/librechat.yaml:ro
+      - librechat_uploads:/app/client/public/images
+      - librechat_logs:/app/api/logs
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      - MEILI_HOST=http://meilisearch:7700
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - CREDS_KEY=${CREDS_KEY}
+      - CREDS_IV=${CREDS_IV}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - MEM0_BASE_URL=http://mem0:8000
+      - NODE_ENV=production
+      - ALLOW_REGISTRATION=true
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+      mem0:
+        condition: service_healthy
+    networks:
+      - ai-stack
+
+# ==============================================================
+# REDE
+# ==============================================================
+networks:
+  ai-stack:
+    driver: bridge
+    name: ai-stack
+
+# ==============================================================
+# VOLUMES
+# ==============================================================
+volumes:
+  chromadb_data:
+    name: ai-stack-chromadb
+  ollama_data:
+    name: ai-stack-ollama
+  mongo_data:
+    name: ai-stack-mongodb
+  meili_data:
+    name: ai-stack-meilisearch
+  librechat_uploads:
+    name: ai-stack-librechat-uploads
+  librechat_logs:
+    name: ai-stack-librechat-logs
+  openclaw_config:
+    name: ai-stack-openclaw-config
+  openclaw_workspace:
+    name: ai-stack-openclaw-workspace
