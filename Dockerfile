@@ -2,7 +2,7 @@ FROM python:3.11
 
 WORKDIR /app
 
-RUN pip install --default-timeout=100 --no-cache-dir fastapi==0.115.0 uvicorn==0.30.0 mem0ai==0.1.29 chromadb==0.5.3 pydantic==2.7.0
+RUN pip install --default-timeout=100 --no-cache-dir fastapi==0.115.0 uvicorn==0.30.0 mem0ai==0.1.29 chromadb==0.5.3 pydantic==2.7.3
 
 COPY server.py .
 
